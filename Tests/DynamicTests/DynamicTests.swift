@@ -1,96 +1,113 @@
-import XCTest
+import Foundation
+import Testing
 
 @testable import Dynamic
 
-final class DynamicTests: XCTestCase {
-    class override func setUp() {
+struct LoggingScope: SuiteTrait, TestScoping {
+    func provideScope(for test: Test, testCase: Test.Case?, performing function: () async throws -> Void) async throws {
         Dynamic.loggingEnabled = true
-//        Logger.enabled = false
+        try await function()
     }
+}
 
-    func testInit() {
+extension SuiteTrait where Self == LoggingScope {
+    static var withLogging: LoggingScope { LoggingScope() }
+}
+
+@Suite(.withLogging)
+@MainActor
+final class DynamicTests {
+    @Test
+    func initialization() {
         let className = "NSDateFormatter"
 
         let formatter1 = ObjC.NSDateFormatter()
-        XCTAssertEqual(formatter1.asObject?.className, className, "Parameterless init")
-        XCTAssert(formatter1.asObject is DateFormatter, "Parameterless init - Bridging")
+        #expect(formatter1.asObject?.className == className, "Parameterless init")
+        #expect(formatter1.asObject is DateFormatter, "Parameterless init - Bridging")
 
         let formatter2 = ObjC.NSDateFormatter.`init`()
-        XCTAssertEqual(formatter2.asObject?.className, className, "Parameterless init with explicit init")
+        #expect(formatter2.asObject?.className == className, "Parameterless init with explicit init")
     }
 
-    func testInitWithParameters() {
+    @Test
+    func initWithParameters() {
         let uuidString = "68753A44-4D6F-1226-9C60-0050E4C00067"
         let className = "__NSConcreteUUID"
 
         let uuid1 = ObjC.NSUUID(UUIDString: uuidString)
-        XCTAssertEqual(uuid1.asObject?.className, className, "Parameterized init")
-        XCTAssertEqual(uuid1.UUIDString.asString, uuidString)
+
+        #expect(uuid1.asObject?.className == className, "Parameterized init")
+        #expect(uuid1.UUIDString.asString == uuidString)
 
         let uuid2 = ObjC.NSUUID.initWithUUIDString(uuidString)
-        XCTAssertEqual(uuid2.asObject?.className, className, "Parameterized init with explicit init")
-        XCTAssertEqual(uuid2.UUIDString.asString, uuidString)
+        #expect(uuid2.asObject?.className == className, "Parameterized init with explicit init")
+        #expect(uuid2.UUIDString.asString == uuidString)
     }
 
+    @Test
     func testClassMethods() {
         let uuidClassName = "__NSConcreteUUID"
         let uuid = ObjC.NSUUID.UUID()
-        XCTAssertEqual(uuid.asObject?.className, uuidClassName, "Class methods")
+        #expect(uuid.asObject?.className == uuidClassName, "Class methods")
 
         let exceptionClassName = "NSException"
         let name = "Dummy"
         let reason = "Testing"
         let userInfo = ["Foo": "Bar"] as NSDictionary
         let exception = ObjC.NSException.exceptionWithName(name, reason: reason, userInfo: userInfo)
-        XCTAssertEqual(exception.asObject?.className, exceptionClassName, "Class methods")
-        XCTAssertEqual(exception.name.asString, name, "Properties passed to the constructor")
-        XCTAssertEqual(exception.reason.asString, reason, "Properties passed to the constructor")
-        XCTAssertEqual(exception.userInfo.asDictionary, userInfo, "Properties passed to the constructor")
+        #expect(exception.asObject?.className == exceptionClassName, "Class methods")
+        #expect(exception.name.asString == name, "Properties passed to the constructor")
+        #expect(exception.reason.asString == reason, "Properties passed to the constructor")
+        #expect(exception.userInfo.asDictionary == userInfo, "Properties passed to the constructor")
     }
 
+    @Test
     func testProperties() {
         let host = "example.com"
         let urlString = "https://\(host)/"
         let urlComponents = ObjC.NSURLComponents.componentsWithString(urlString)
-        XCTAssertEqual(urlComponents.host.asString, host, "Properties passed to the constructor")
+        #expect(urlComponents.host.asString == host, "Properties passed to the constructor")
 
         let host2 = "example2.com"
         urlComponents.host = host2
-        XCTAssertEqual(urlComponents.host.asString, host2, "Setting properties")
+        #expect(urlComponents.host.asString == host2, "Setting properties")
 
         let queryItems = [NSURLQueryItem(name: "foo", value: "bar")] as NSArray
         urlComponents.queryItems = queryItems
-        XCTAssertEqual(urlComponents.queryItems.asArray, queryItems, "Setting properties")
-        XCTAssertEqual(urlComponents.URL, NSURL(string: "https://example2.com/?foo=bar"))
+        #expect(urlComponents.queryItems.asArray == queryItems, "Setting properties")
+        #expect(urlComponents.URL == NSURL(string: "https://example2.com/?foo=bar"))
 
         let progress = ObjC.NSProgress.progressWithTotalUnitCount(100)
         progress.completedUnitCount = 50
-        XCTAssertEqual(progress.fractionCompleted, 0.5, "Setting numeric properties")
+        #expect(progress.fractionCompleted == 0.5, "Setting numeric properties")
 
         let queue = ObjC.NSOperationQueue()
-        XCTAssertFalse(queue.isSuspended!)
+        #expect(!queue.isSuspended!)
         queue.isSuspended = true
-        XCTAssertTrue(queue.isSuspended!, "Setting boolean properties with 'is' prefix")
+        #expect(queue.isSuspended!, "Setting boolean properties with 'is' prefix")
     }
 
-    func testBlocks() {
+    @Test
+    func blocks() async {
         // swiftlint:disable:next nesting
         typealias VoidBlock = @convention(block) () -> Void
 
-        let closure1Called = expectation(description: "Closure 1")
+        var closure1Called = false
         let progress = ObjC.NSProgress.progressWithTotalUnitCount(100)
         progress.cancellationHandler = {
-            closure1Called.fulfill()
+            closure1Called = true
         } as VoidBlock
         progress.cancel()
 
-        let closure2Called = expectation(description: "Closure 2")
+        var closure2Called = false
         let operation = ObjC.NSBlockOperation.blockOperationWithBlock({
-            closure2Called.fulfill()
+            closure2Called = true
         } as VoidBlock)
         ObjC.NSOperationQueue.mainQueue.addOperation(operation)
 
-        waitForExpectations(timeout: 0.1, handler: nil)
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(closure1Called)
+        #expect(closure2Called)
     }
 
     func testExplicitUnwrapping() {
@@ -104,30 +121,20 @@ final class DynamicTests: XCTestCase {
         let processInfo1 = ProcessInfo.processInfo
         let processInfo2 = ObjC.NSProcessInfo.processInfo
 
-        XCTAssertEqual(processInfo1.processIdentifier,
-                       processInfo2.processIdentifier.asInt32, "Int32")
-        XCTAssertEqual(processInfo1.processorCount,
-                       processInfo2.processorCount.asInt, "Int")
-        XCTAssertEqual(processInfo1.physicalMemory,
-                       processInfo2.physicalMemory.asUInt64, "UInt64")
-        XCTAssertEqual(processInfo1.systemUptime,
-                       processInfo2.systemUptime.asDouble ?? 0, accuracy: 1, "Double")
-        XCTAssertEqual(processInfo1.arguments as NSArray,
-                       processInfo2.arguments.asArray, "Array")
-        XCTAssertEqual(processInfo1.arguments,
-                       processInfo2.arguments.asInferred(), "Array")
-        XCTAssertEqual(processInfo1.environment as NSDictionary,
-                       processInfo2.environment, "Dictionary")
-        XCTAssertEqual(processInfo1.processName,
-                       processInfo2.processName.asString, "String")
+        #expect(processInfo1.processIdentifier == processInfo2.processIdentifier.asInt32, "Int32")
+        #expect(processInfo1.processorCount == processInfo2.processorCount.asInt, "Int")
+        #expect(processInfo1.physicalMemory == processInfo2.physicalMemory.asUInt64, "UInt64")
+        #expect(processInfo1.systemUptime == processInfo2.systemUptime.asDouble ?? 0, "Double")
+        #expect(processInfo1.arguments as NSArray == processInfo2.arguments.asArray, "Array")
+        #expect(processInfo1.arguments == processInfo2.arguments.asInferred(), "Array")
+        #expect(processInfo1.environment as NSDictionary == processInfo2.environment, "Dictionary")
+        #expect(processInfo1.processName == processInfo2.processName.asString, "String")
 
         let version1 = processInfo1.operatingSystemVersion
         let version2: NSOperatingSystemVersion? = processInfo2.operatingSystemVersion.asInferred()
-        XCTAssertEqual(version1.majorVersion,
-                       version2?.majorVersion, "Struct")
+        #expect(version1.majorVersion == version2?.majorVersion, "Struct")
 
-        XCTAssertEqual(processInfo1.isOperatingSystemAtLeast(version1),
-                       processInfo2.isOperatingSystemAtLeastVersion(version2).asBool, "Bool")
+        #expect(processInfo1.isOperatingSystemAtLeast(version1) == processInfo2.isOperatingSystemAtLeastVersion(version2).asBool, "Bool")
     }
 
     func testImplicitUnwrapping() {
@@ -141,92 +148,86 @@ final class DynamicTests: XCTestCase {
         let processInfo1 = ProcessInfo.processInfo
         let processInfo2 = ObjC.NSProcessInfo.processInfo
 
-        XCTAssertEqual(processInfo1.processIdentifier,
-                       processInfo2.processIdentifier, "Int32")
-        XCTAssertEqual(processInfo1.processorCount,
-                       processInfo2.processorCount, "Int")
-        XCTAssertEqual(processInfo1.physicalMemory,
-                       processInfo2.physicalMemory, "UInt64")
-        XCTAssertEqual(processInfo1.systemUptime,
-                       processInfo2.systemUptime ?? 0, accuracy: 1, "Double")
-        XCTAssertEqual(processInfo1.arguments,
-                       processInfo2.arguments, "Array")
-        XCTAssertEqual(processInfo1.environment,
-                       processInfo2.environment, "Dictionary")
-        XCTAssertEqual(processInfo1.processName,
-                       processInfo2.processName, "String")
+        #expect(processInfo1.processIdentifier == processInfo2.processIdentifier, "Int32")
+        #expect(processInfo1.processorCount == processInfo2.processorCount, "Int")
+        #expect(processInfo1.physicalMemory == processInfo2.physicalMemory, "UInt64")
+        #expect(Int(processInfo1.systemUptime) == Int(processInfo2.systemUptime ?? 0), "Double")
+        #expect(processInfo1.arguments == processInfo2.arguments, "Array")
+        #expect(processInfo1.environment == processInfo2.environment, "Dictionary")
+        #expect(processInfo1.processName == processInfo2.processName, "String")
 
         let version1 = processInfo1.operatingSystemVersion
         let version2: NSOperatingSystemVersion? = processInfo2.operatingSystemVersion
-        XCTAssertEqual(version1.majorVersion,
-                       version2?.majorVersion, "Struct")
+        #expect(version1.majorVersion == version2?.majorVersion, "Struct")
 
-        XCTAssertEqual(processInfo1.isOperatingSystemAtLeast(version1),
-                       processInfo2.isOperatingSystemAtLeastVersion(version2), "Bool")
+        #expect(processInfo1.isOperatingSystemAtLeast(version1) == processInfo2.isOperatingSystemAtLeastVersion(version2), "Bool")
 
         let formatter1 = ObjC.NSDateFormatter()
-        XCTAssertTrue(type(of: formatter1) == Dynamic.self, "Type should be Dynamic")
+        #expect(type(of: formatter1) == Dynamic.self, "Type should be Dynamic")
 
         let formatter2: NSObject? = ObjC.NSDateFormatter()
-        XCTAssertEqual(formatter2?.className, "NSDateFormatter", "Value isn't unwrapped")
+        #expect(formatter2?.className == "NSDateFormatter", "Value isn't unwrapped")
 
         let formatter3 = { () -> NSObject? in
             ObjC.NSDateFormatter()
         }()
-        XCTAssertEqual(formatter3?.className, "NSDateFormatter", "Value isn't unwrapped")
+        #expect(formatter3?.className == "NSDateFormatter", "Value isn't unwrapped")
 
         formatter1.dateFormat = ObjC("yyyy-MM-dd HH:mm:ss")
         let date = ObjC.NSDate(timeIntervalSince1970: 1_600_000_000)
         let string: String? = formatter1.stringFromDate(date)
         let newDate: Date? = formatter1.dateFromString(string)
-        XCTAssertEqual(date.asInferred(),
-                       newDate, "Value isn't unwrapped")
+        #expect(date.asInferred() == newDate, "Value isn't unwrapped")
 
-        XCTAssertEqual(date.asObject,
-                       formatter1.dateFromString(formatter1.stringFromDate(date)), "Value isn't unwrapped")
+        #expect(date.asObject == formatter1.dateFromString(formatter1.stringFromDate(date)), "Value isn't unwrapped")
     }
 
     func testEdgeCases() {
         let error = ObjC.NSDateFormatter().invalidMethod()
-        XCTAssertTrue(error.asObject is Error, "Calling non existing method should return error")
-        XCTAssertTrue(error.isError, "isError should return true for errors")
+        #expect(error.asObject is Error, "Calling non existing method should return error")
+        #expect(error.isError, "isError should return true for errors")
 
         let errorChained = error.thisMethodCallHasNoEffect(123).randomProperty
-        XCTAssertTrue(errorChained === error, "Calling methods and properties form error should return the same object")
+        #expect(errorChained === error, "Calling methods and properties form error should return the same object")
 
         let null = ObjC.nil
-        XCTAssertNil(null.asObject, "Wrapped nil should return nil")
+        #expect(null.asObject == nil, "Wrapped nil should return nil")
 
         let nullChained = null.thisMethodCallHasNoEffect(123).randomProperty
-        XCTAssertTrue(nullChained === null, "Calling methods and properties form <nil> should return the same object")
+        #expect(nullChained === null, "Calling methods and properties form <nil> should return the same object")
 
         let formatter = ObjC.NSDateFormatter()
-        XCTAssertEqual(formatter.stringFromDate(Date()), "", "Should return an empty string")
+        #expect(formatter.stringFromDate(Date()) == "", "Should return an empty string")
         formatter.dateFormat = ObjC("yyyy-MM-dd HH:mm:ss")
-        XCTAssertNotEqual(formatter.stringFromDate(Date()), "", "Should NOT return an empty string")
+        #expect(formatter.stringFromDate(Date()) != "", "Should NOT return an empty string")
 
         formatter.dateFormat = .nil
-        XCTAssertEqual(formatter.stringFromDate(Date()), "", "Should return an empty string")
+        #expect(formatter.stringFromDate(Date()) == "", "Should return an empty string")
         formatter.dateFormat = ObjC("yyyy-MM-dd HH:mm:ss")
-        XCTAssertNotEqual(formatter.stringFromDate(Date()), "", "Should NOT return an empty string")
+        #expect(formatter.stringFromDate(Date()) != "", "Should NOT return an empty string")
 
         formatter.dateFormat = nil as String? // or String?.none
-        XCTAssertEqual(formatter.stringFromDate(Date()), "", "Should return an empty string")
+        #expect(formatter.stringFromDate(Date()) == "", "Should return an empty string")
     }
 
     func testAlternativeMethodNames() {
         let formatter = ObjC.NSDateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        XCTAssertEqual(formatter.stringFromDate(Date()).asString,
-                       formatter.stringFrom(date: Date()), "Alternative methods should work as the original")
+        #expect(
+            formatter.stringFromDate(Date()).asString ==
+                formatter.stringFrom(date: Date()),
+            "Alternative methods should work as the original")
 
-        XCTAssertEqual(formatter.stringFromDate(Date()).asString,
-                       formatter.string(fromDate: Date()), "Alternative methods should work as the original")
+        #expect(
+            formatter.stringFromDate(Date()).asString ==
+                formatter.string(fromDate: Date()),
+            "Alternative methods should work as the original")
 
         let progress1 = ObjC.NSProgress.progressWithTotalUnitCount(99)
         let progress2 = ObjC.NSProgress.progress(withTotalUnitCount: 99)
-        XCTAssertEqual(progress1.totalUnitCount.asInt,
-                       progress2.totalUnitCount.asInt, "Alternative methods should work as the original")
+        #expect(
+            progress1.totalUnitCount.asInt == progress2.totalUnitCount.asInt,
+            "Alternative methods should work as the original")
     }
 
     func testHiddenAPI() {
@@ -241,7 +242,7 @@ final class DynamicTests: XCTestCase {
             _ = withUnsafeMutablePointer(to: &result) { pointer in
                 invocation.getReturnValue(pointer)
             }
-            XCTAssertEqual(result, "abc", "Can't use hidden API")
+            #expect(result == "abc", "Can't use hidden API")
             if let string = result {
                 _ = Unmanaged.passRetained(string).takeUnretainedValue()
             }
@@ -271,7 +272,7 @@ final class DynamicTests: XCTestCase {
             _ = withUnsafeMutablePointer(to: &result) { pointer in
                 invocation.getReturnValue(pointer)
             }
-            XCTAssertEqual(result, "ABC123", "Can't use hidden API")
+            #expect(result == "ABC123", "Can't use hidden API")
             if let string = result {
                 _ = Unmanaged.passRetained(string).takeUnretainedValue()
             }
