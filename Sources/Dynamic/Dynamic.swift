@@ -5,17 +5,24 @@
 //
 
 import Foundation
+import os
 
 public typealias ObjC = Dynamic
 
 @dynamicCallable
 @dynamicMemberLookup
-public class Dynamic: CustomDebugStringConvertible, Loggable {
-    public static var loggingEnabled: Bool = false {
-        didSet {
-            Invocation.loggingEnabled = loggingEnabled
+public class Dynamic: CustomDebugStringConvertible, Loggable, @unchecked Sendable {
+    private static let _loggingEnabled = OSAllocatedUnfairLock(initialState: false)
+    public static var loggingEnabled: Bool {
+        get {
+            _loggingEnabled.withLock { $0 }
+        }
+        set {
+            _loggingEnabled.withLock { $0 = newValue }
+            Invocation.loggingEnabled = newValue
         }
     }
+
     var loggingEnabled: Bool { Self.loggingEnabled }
 
     public static let `nil` = Dynamic(nil)
@@ -237,14 +244,14 @@ extension Dynamic {
             let returnType = invocation.returnType,
             invocation.returnsAny else { return nil }
 
-        let buffer = UnsafeMutablePointer<Int8>.allocate(capacity: invocation.returnLength)
-        defer { buffer.deallocate() }
-        buffer.initialize(repeating: 0, count: invocation.returnLength)
+        return withUnsafeTemporaryAllocation(of: Int8.self, capacity: invocation.returnLength) { buffer in
+            buffer.initialize(repeating: 0)
 
-        invocation.getReturnValue(result: &buffer.pointee)
+            invocation.getReturnValue(result: &buffer.baseAddress!.pointee)
 
-        let value = NSValue(bytes: buffer, objCType: UnsafePointer<Int8>(returnType))
-        return value
+            let value = NSValue(bytes: buffer.baseAddress!, objCType: UnsafePointer<Int8>(returnType))
+            return value
+        }
     }
 
     public var asObject: NSObject? { asAnyObject as? NSObject }
@@ -289,11 +296,10 @@ extension Dynamic {
             return nil
         }
 
-        let buffer = UnsafeMutablePointer<T>.allocate(capacity: 1)
-        defer { buffer.deallocate() }
-        value.getValue(buffer)
-
-        return buffer.pointee
+        return withUnsafeTemporaryAllocation(of: T.self, capacity: 1) { buffer in
+            value.getValue(buffer.baseAddress!)
+            return buffer[0]
+        }
     }
 }
 

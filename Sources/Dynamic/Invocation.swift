@@ -5,9 +5,19 @@
 //
 
 import Foundation
+import os
 
 class Invocation: Loggable {
-    public static var loggingEnabled: Bool = false
+    private static let _loggingEnabled = OSAllocatedUnfairLock(initialState: false)
+    public static var loggingEnabled: Bool {
+        get {
+            _loggingEnabled.withLock { $0 }
+        }
+        set {
+            _loggingEnabled.withLock { $0 = newValue }
+        }
+    }
+
     var loggingEnabled: Bool { Self.loggingEnabled }
 
     private let target: NSObject
@@ -126,16 +136,14 @@ class Invocation: Loggable {
 
         if let valueArgument = argument as? NSValue {
             /// Get the type byte size
-            let typeSize = UnsafeMutablePointer<Int>.allocate(capacity: 1)
-            defer { typeSize.deallocate() }
-            NSGetSizeAndAlignment(valueArgument.objCType, typeSize, nil)
+            var typeSize: Int = 0
+            NSGetSizeAndAlignment(valueArgument.objCType, &typeSize, nil)
 
             /// Get the actual value
-            let buffer = UnsafeMutablePointer<Int8>.allocate(capacity: typeSize.pointee)
-            defer { buffer.deallocate() }
-            valueArgument.getValue(buffer)
-
-            method(invocation, selector, buffer, index)
+            withUnsafeTemporaryAllocation(of: Int8.self, capacity: typeSize) { buffer in
+                valueArgument.getValue(buffer.baseAddress!)
+                method(invocation, selector, buffer.baseAddress!, index)
+            }
         } else {
             withUnsafePointer(to: argument) { pointer in
                 method(invocation, selector, pointer, index)

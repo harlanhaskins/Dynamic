@@ -5,62 +5,69 @@
 //
 
 import Foundation
+import os
 
 protocol Loggable: AnyObject {
     var loggingEnabled: Bool { get }
+}
+
+protocol Logger: AnyObject, Sendable {
+    @discardableResult
+    func log(_ group: LogGroup) -> any Logger
+
+    @discardableResult
+    func log(_ items: [Any]) -> any Logger
+
+    @discardableResult
+    func log(_ items: Any...) -> any Logger
+}
+
+extension Logger {
+    func log(_ items: Any...) -> any Logger {
+        log(items)
+    }
 }
 
 extension Loggable {
     var loggingEnabled: Bool { false }
     var logUsingPrint: Bool { true }
 
-    @discardableResult
-    func log(_ items: Any...) -> Logger {
-        guard loggingEnabled else { return Logger.dummy }
-        return Logger.logger(for: self).log(items)
-    }
+    /// Lazily creates and stores a local debug logger as an associated object.
+    var logger: Logger {
+        let loggerKey = UnsafeRawPointer(bitPattern: Int(bitPattern: ObjectIdentifier(Logger.self)))!
 
-    @discardableResult
-    func log(_ group: Logger.Group) -> Logger {
-        guard loggingEnabled else { return Logger.dummy }
-        return Logger.logger(for: self).log(group)
-    }
-}
-
-class Logger {
-    enum Group {
-        case start, end
-    }
-
-    static let dummy = DummyLogger()
-    static var enabled = true
-
-    private static var loggers: [ObjectIdentifier: Logger] = [:]
-    private static var level: Int = 0
-
-    static func logger(for object: AnyObject) -> Logger {
-        let id = ObjectIdentifier(object)
-        if let logger = Self.loggers[id] {
+        if let logger = objc_getAssociatedObject(self, loggerKey) as? Logger {
             return logger
         }
-
-        let logger = Logger()
-        Self.loggers[id] = logger
-
+        let logger = PrintLogger()
+        objc_setAssociatedObject(self, loggerKey, logger, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         return logger
     }
 
     @discardableResult
-    func log(_ items: Any..., withBullet: Bool = true) -> Logger {
-        log(items, withBullet: withBullet)
+    func log(_ items: Any...) -> Logger {
+        guard loggingEnabled else { return DummyLogger.shared }
+        return logger.log(items)
     }
 
     @discardableResult
-    func log(_ items: [Any], withBullet: Bool = true) -> Logger {
-        guard Self.enabled else { return self }
+    func log(_ group: LogGroup) -> Logger {
+        guard loggingEnabled else { return DummyLogger.shared }
+        return logger.log(group)
+    }
+}
 
+enum LogGroup {
+    case start, end
+}
+
+final class PrintLogger: Logger {
+    private static let level = OSAllocatedUnfairLock(initialState: 0)
+
+    @discardableResult
+    func logUnchecked(_ items: [Any], level: Int, withBullet: Bool = true) -> Logger {
         let message = items.lazy.map { String(describing: $0) }.joined(separator: " ")
-        var indent = String(repeating: " ╷  ", count: Self.level)
+        var indent = String(repeating: " ╷  ", count: level)
         if !indent.isEmpty, withBullet {
             indent = indent.dropLast(2) + "‣ "
         }
@@ -69,7 +76,14 @@ class Logger {
     }
 
     @discardableResult
-    func log(_ group: Group) -> Logger {
+    func log(_ items: [Any]) -> Logger {
+        Self.level.withLockUnchecked { level in
+            logUnchecked(items, level: level)
+        }
+    }
+
+    @discardableResult
+    func log(_ group: LogGroup) -> Logger {
         switch group {
         case .start: logGroupStart()
         case .end: logGroupEnd()
@@ -78,29 +92,31 @@ class Logger {
     }
 
     private func logGroupStart() {
-        guard Self.enabled else { return }
-
-        log([" ╭╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴"], withBullet: false)
-        Self.level += 1
+        Self.level.withLockUnchecked { level in
+            logUnchecked([" ╭╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴"], level: level, withBullet: false)
+            level += 1
+        }
     }
 
     private func logGroupEnd() {
-        guard Self.enabled else { return }
-
-        guard Self.level > 0 else { return }
-        Self.level -= 1
-        log([" ╰╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴"], withBullet: false)
+        Self.level.withLockUnchecked { level in
+            guard level > 0 else { return }
+            level -= 1
+            logUnchecked([" ╰╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴"], level: level, withBullet: false)
+        }
     }
 }
 
-class DummyLogger: Logger {
+final class DummyLogger: Logger {
+    static let shared = DummyLogger()
+
     @discardableResult
-    override func log(_ items: [Any], withBullet: Bool = true) -> Logger {
+    func log(_ items: [Any]) -> Logger {
         self
     }
 
     @discardableResult
-    override func log(_ group: Group) -> Logger {
+    func log(_ group: LogGroup) -> Logger {
         self
     }
 }
